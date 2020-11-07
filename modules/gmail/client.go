@@ -3,7 +3,7 @@
 * https://developers.google.com/calendar/quickstart/go
  */
 
-package gcal
+package gmail
 
 import (
 	"context"
@@ -16,60 +16,131 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"time"
 
 	"github.com/wtfutil/wtf/utils"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
-	"google.golang.org/api/calendar/v3"
+	"google.golang.org/api/gmail/v1"
 )
 
 /* -------------------- Exported Functions -------------------- */
 
-func (widget *Widget) Fetch() (*calendar.Events, error) {
+type GmailMessage struct {
+	date    string
+	snippet string
+	from    string
+	subject string
+	id      string
+	payload *gmail.MessagePart
+}
+
+type GmailClient struct {
+	service  *gmail.Service
+	settings *Settings
+}
+
+func NewClient(settings *Settings) *GmailClient {
 	ctx := context.Background()
 
-	println(widget.settings.secretFile)
-	secretPath, _ := utils.ExpandHomeDir(widget.settings.secretFile)
+	secretPath, _ := utils.ExpandHomeDir(settings.secretFile)
 
 	b, err := ioutil.ReadFile(secretPath)
 	if err != nil {
-		return nil, err
+		fmt.Println(err)
+		return nil
 	}
 
-	config, err := google.ConfigFromJSON(b, calendar.CalendarReadonlyScope)
+	config, err := google.ConfigFromJSON(b, gmail.GmailModifyScope)
 	if err != nil {
-		return nil, err
+		fmt.Println(err)
+		return nil
 	}
 	client := getClient(ctx, config)
 
-	srv, err := calendar.New(client)
+	srv, err := gmail.New(client)
+
+	if err != nil {
+		fmt.Println(err)
+		return nil
+	}
+
+	return &GmailClient{
+		service:  srv,
+		settings: settings,
+	}
+}
+
+func (client *GmailClient) Fetch() ([]*GmailMessage, error) {
+	query := client.settings.searchQuery
+	messageResponse, err := client.service.Users.Messages.List("me").Q(query).Do()
 	if err != nil {
 		return nil, err
 	}
 
-	startTime := fromMidnight().Format(time.RFC3339)
-	endTime := midnightTomorrow().Format(time.RFC3339)
-	eventLimit := int64(widget.settings.eventCount)
-	events, err := srv.Events.List("primary").ShowDeleted(false).SingleEvents(true).TimeMin(startTime).TimeMax(endTime).MaxResults(eventLimit).OrderBy("startTime").Do()
-	if err != nil {
-		return nil, err
+	gmailMessages := []*GmailMessage{}
+	messageLimit := int(client.settings.mailCount)
+	if len(messageResponse.Messages) < messageLimit {
+		messageLimit = len(messageResponse.Messages)
+	}
+	for i := 0; i < messageLimit; i++ {
+		id := messageResponse.Messages[i].Id
+		msg, err := client.service.Users.Messages.Get("me", id).Do()
+		if err != nil {
+			return nil, err
+		}
+		date := ""
+		from := ""
+		subject := ""
+		for _, h := range msg.Payload.Headers {
+			if h.Name == "Date" {
+				date = h.Value
+			} else if h.Name == "From" {
+				from = h.Value
+			} else if h.Name == "Subject" {
+				subject = h.Value
+			}
+		}
+		gmailMessages = append(gmailMessages, &GmailMessage{
+			date:    date,
+			snippet: msg.Snippet,
+			from:    from,
+			subject: subject,
+			id:      id,
+			payload: msg.Payload,
+		})
 	}
 
-	return events, err
+	return gmailMessages, err
+}
+
+func (client *GmailClient) Archive(message *GmailMessage) error {
+	if message == nil {
+		return nil
+	}
+
+	removeLabelRequest := &gmail.ModifyMessageRequest{
+		RemoveLabelIds: []string{"INBOX"},
+	}
+	_, err := client.service.Users.Messages.Modify("me", message.id, removeLabelRequest).Do()
+	if err != nil {
+		fmt.Println(err)
+	}
+	return err
+}
+
+func (client *GmailClient) Trash(message *GmailMessage) error {
+	if message == nil {
+		return nil
+	}
+
+	_, err := client.service.Users.Messages.Trash("me", message.id).Do()
+	if err != nil {
+		fmt.Println(err)
+	}
+	return err
 }
 
 /* -------------------- Unexported Functions -------------------- */
-
-func fromMidnight() time.Time {
-	now := time.Now()
-	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-}
-
-func midnightTomorrow() time.Time {
-	now := time.Now()
-	return time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
-}
 
 // getClient uses a Context and Config to retrieve a Token
 // then generate a Client. It returns the generated Client.
@@ -115,7 +186,7 @@ func tokenCacheFile() (string, error) {
 	tokenCacheDir := filepath.Join(usr.HomeDir, ".credentials")
 	os.MkdirAll(tokenCacheDir, 0700)
 	return filepath.Join(tokenCacheDir,
-		url.QueryEscape("calendar-go-quickstart.json")), err
+		url.QueryEscape("gmail-go-quickstart.json")), err
 }
 
 // tokenFromFile retrieves a Token from a given file path.

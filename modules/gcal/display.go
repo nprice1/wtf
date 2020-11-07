@@ -7,130 +7,203 @@ import (
 	"time"
 
 	"github.com/wtfutil/wtf/utils"
+	calendar "google.golang.org/api/calendar/v3"
 )
 
 func (widget *Widget) display() {
-	widget.Redraw(widget.content)
+	if widget.Events == nil {
+		return
+	}
+
+	var prevEvent *calendar.Event
+
+	str := ""
+	for i, event := range widget.Events.Items {
+		conflict := widget.conflicts(event, widget.Events)
+
+		str = str + fmt.Sprintf(
+			"%s %s[%s]%s[white]\n %s[%s]%s %s[white]\n\n",
+			widget.dayDivider(event, prevEvent),
+			widget.responseIcon(event),
+			widget.titleColor(event, i),
+			widget.eventSummary(event, conflict),
+			widget.location(event),
+			widget.descriptionColor(event),
+			widget.eventTimestamp(event),
+			widget.until(event),
+		)
+
+		prevEvent = event
+	}
+
+	widget.View.SetText(str)
 }
 
-func (widget *Widget) content() (string, string, bool) {
-	title := widget.settings.common.Title
-	calEvents := widget.calEvents
+// conflicts returns TRUE if this event conflicts with another, FALSE if it does not
+func (widget *Widget) conflicts(event *calendar.Event, events *calendar.Events) bool {
+	conflict := false
 
-	if widget.err != nil {
-		return title, widget.err.Error(), true
-	}
-
-	if (calEvents == nil) || (len(calEvents) == 0) {
-		return title, "No calendar events", false
-	}
-
-	var str string
-	var prevEvent *CalEvent
-
-	if !widget.settings.showDeclined {
-		calEvents = widget.removeDeclined(calEvents)
-	}
-
-	for _, calEvent := range calEvents {
-		if calEvent.AllDay() && !widget.settings.showAllDay {
+	for _, otherEvent := range events.Items {
+		if event == otherEvent {
 			continue
 		}
 
-		ts := calEvent.Timestamp(widget.settings.hourFormat, widget.settings.showEndTime)
-		timestamp := fmt.Sprintf("[%s]%s", widget.eventTimeColor(calEvent), ts)
-		if calEvent.AllDay() {
-			timestamp = ""
+		eventStart, _ := time.Parse(time.RFC3339, event.Start.DateTime)
+		eventEnd, _ := time.Parse(time.RFC3339, event.End.DateTime)
+
+		otherEnd, _ := time.Parse(time.RFC3339, otherEvent.End.DateTime)
+		otherStart, _ := time.Parse(time.RFC3339, otherEvent.Start.DateTime)
+
+		if eventStart.Before(otherEnd) && eventEnd.After(otherStart) {
+			conflict = true
+			break
 		}
-
-		eventTitle := fmt.Sprintf("[%s]%s",
-			widget.titleColor(calEvent),
-			widget.eventSummary(calEvent, calEvent.ConflictsWith(calEvents)),
-		)
-
-		lineOne := fmt.Sprintf(
-			"%s %s %s %s[white]\n",
-			widget.dayDivider(calEvent, prevEvent),
-			widget.responseIcon(calEvent),
-			timestamp,
-			eventTitle,
-		)
-
-		str += fmt.Sprintf("%s   %s%s\n",
-			lineOne,
-			widget.location(calEvent),
-			widget.timeUntil(calEvent),
-		)
-
-		if (widget.location(calEvent) != "") || (widget.timeUntil(calEvent) != "") {
-			str += "\n"
-		}
-
-		prevEvent = calEvent
 	}
 
-	return title, str, false
+	return conflict
 }
 
-func (widget *Widget) dayDivider(event, prevEvent *CalEvent) string {
-	var prevStartTime time.Time
-
+func (widget *Widget) dayDivider(event, prevEvent *calendar.Event) string {
 	if prevEvent != nil {
-		prevStartTime = prevEvent.Start()
-	}
+		prevStartTime, _ := time.Parse(time.RFC3339, prevEvent.Start.DateTime)
+		currStartTime, _ := time.Parse(time.RFC3339, event.Start.DateTime)
 
-	// round times to midnight for comparison
-	toMidnight := func(t time.Time) time.Time {
-		t = t.Local()
-		return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
-	}
-	prevStartDay := toMidnight(prevStartTime)
-	eventStartDay := toMidnight(event.Start())
-
-	if !eventStartDay.Equal(prevStartDay) {
-		return fmt.Sprintf("[%s]",
-			widget.settings.colors.day) +
-			event.Start().Format(utils.FullDateFormat) +
-			"\n"
+		if currStartTime.Day() != prevStartTime.Day() {
+			return "\n"
+		}
 	}
 
 	return ""
 }
 
-func (widget *Widget) descriptionColor(calEvent *CalEvent) string {
-	if calEvent.Past() {
-		return widget.settings.colors.past
+func (widget *Widget) descriptionColor(event *calendar.Event) string {
+	color := widget.settings.colors.description
+
+	if widget.eventIsPast(event) {
+		color = widget.settings.colors.past
 	}
 
-	return widget.settings.colors.description
+	return color
 }
 
-func (widget *Widget) eventTimeColor(calEvent *CalEvent) string {
-	return widget.settings.colors.eventTime
-}
+func (widget *Widget) eventSummary(event *calendar.Event, conflict bool) string {
+	summary := event.Summary
 
-func (widget *Widget) eventSummary(calEvent *CalEvent, conflict bool) string {
-	summary := calEvent.event.Summary
-
-	if calEvent.Now() {
+	if widget.eventIsNow(event) {
 		summary = fmt.Sprintf(
 			"%s %s",
 			widget.settings.currentIcon,
-			summary,
+			event.Summary,
 		)
 	}
 
 	if conflict {
 		return fmt.Sprintf("%s %s", widget.settings.conflictIcon, summary)
+	} else {
+		return summary
 	}
-
-	return summary
 }
 
-// timeUntil returns the number of hours or days until the event
+func (widget *Widget) eventTimestamp(event *calendar.Event) string {
+	startTime, _ := time.Parse(time.RFC3339, event.Start.DateTime)
+	return startTime.Format(utils.FriendlyDateTimeFormat)
+}
+
+// eventIsNow returns true if the event is happening now, false if it not
+func (widget *Widget) eventIsNow(event *calendar.Event) bool {
+	startTime, _ := time.Parse(time.RFC3339, event.Start.DateTime)
+	endTime, _ := time.Parse(time.RFC3339, event.End.DateTime)
+
+	return time.Now().After(startTime) && time.Now().Before(endTime)
+}
+
+func (widget *Widget) eventIsPast(event *calendar.Event) bool {
+	ts, _ := time.Parse(time.RFC3339, event.Start.DateTime)
+	return (widget.eventIsNow(event) == false) && ts.Before(time.Now())
+}
+
+func (widget *Widget) titleColor(event *calendar.Event, index int) string {
+	color := widget.settings.colors.title
+
+	for _, untypedArr := range widget.settings.colors.highlights {
+		highlightElements := utils.ToStrs(untypedArr.([]interface{}))
+
+		match, _ := regexp.MatchString(
+			strings.ToLower(highlightElements[0]),
+			strings.ToLower(event.Summary),
+		)
+
+		if match == true {
+			color = highlightElements[1]
+		}
+	}
+
+	if widget.eventIsPast(event) {
+		color = widget.settings.colors.past
+	}
+
+	if widget.Idx == index {
+		color = "black:white"
+	}
+
+	return color
+}
+
+func (widget *Widget) location(event *calendar.Event) string {
+	if !widget.settings.withLocation {
+		return ""
+	}
+
+	if event.Location == "" {
+		return ""
+	}
+
+	return fmt.Sprintf(
+		"[%s]%s\n ",
+		widget.descriptionColor(event),
+		event.Location,
+	)
+}
+
+func (widget *Widget) responseIcon(event *calendar.Event) string {
+	if !widget.settings.displayResponseStatus {
+		return ""
+	}
+
+	response := ""
+
+	for _, attendee := range event.Attendees {
+		if attendee.Email == widget.settings.email {
+			response = attendee.ResponseStatus
+			break
+		}
+	}
+
+	icon := "[gray]"
+
+	switch response {
+	case "accepted":
+		icon = icon + "✔︎ "
+	case "declined":
+		icon = icon + "✘ "
+	case "needsAction":
+		icon = icon + "? "
+	case "tentative":
+		icon = icon + "~ "
+	default:
+		icon = icon + ""
+	}
+
+	return icon
+}
+
+// until returns the number of hours or days until the event
 // If the event is in the past, returns nil
-func (widget *Widget) timeUntil(calEvent *CalEvent) string {
-	duration := time.Until(calEvent.Start()).Round(time.Minute)
+func (widget *Widget) until(event *calendar.Event) string {
+	startTime, _ := time.Parse(time.RFC3339, event.Start.DateTime)
+	duration := time.Until(startTime)
+
+	duration = duration.Round(time.Minute)
 
 	if duration < 0 {
 		return ""
@@ -144,90 +217,19 @@ func (widget *Widget) timeUntil(calEvent *CalEvent) string {
 
 	mins := duration / time.Minute
 
+	if hours <= 0 && days <= 0 && mins <= 2 && !widget.eventIsNow(event) {
+		widget.showNotification(event)
+	}
+
 	untilStr := ""
 
-	color := "[lightblue]"
-	switch {
-	case days > 0:
+	if days > 0 {
 		untilStr = fmt.Sprintf("%dd", days)
-	case hours > 0:
+	} else if hours > 0 {
 		untilStr = fmt.Sprintf("%dh", hours)
-	default:
+	} else {
 		untilStr = fmt.Sprintf("%dm", mins)
-		if mins < 30 {
-			color = "[red]"
-		}
 	}
 
-	return color + untilStr + "[white]"
-}
-
-func (widget *Widget) titleColor(calEvent *CalEvent) string {
-	color := widget.settings.colors.title
-
-	for _, untypedArr := range widget.settings.colors.highlights {
-		highlightElements := utils.ToStrs(untypedArr.([]interface{}))
-
-		match, _ := regexp.MatchString(
-			strings.ToLower(highlightElements[0]),
-			strings.ToLower(calEvent.event.Summary),
-		)
-
-		if match {
-			color = highlightElements[1]
-		}
-	}
-
-	if calEvent.Past() {
-		color = widget.settings.colors.past
-	}
-
-	return color
-}
-
-func (widget *Widget) location(calEvent *CalEvent) string {
-	if !widget.settings.withLocation {
-		return ""
-	}
-
-	if calEvent.event.Location == "" {
-		return ""
-	}
-
-	return fmt.Sprintf(
-		"[%s]%s ",
-		widget.descriptionColor(calEvent),
-		calEvent.event.Location,
-	)
-}
-
-func (widget *Widget) responseIcon(calEvent *CalEvent) string {
-	if !widget.settings.displayResponseStatus {
-		return ""
-	}
-
-	icon := "[gray]"
-
-	switch calEvent.ResponseFor(widget.settings.email) {
-	case "accepted":
-		return icon + "✔"
-	case "declined":
-		return icon + "✘"
-	case "needsAction":
-		return icon + "?"
-	case "tentative":
-		return icon + "~"
-	default:
-		return icon + " "
-	}
-}
-
-func (widget *Widget) removeDeclined(events []*CalEvent) []*CalEvent {
-	var ret []*CalEvent
-	for _, e := range events {
-		if e.ResponseFor(widget.settings.email) != "declined" {
-			ret = append(ret, e)
-		}
-	}
-	return ret
+	return "[lightblue]" + untilStr + "[white]"
 }

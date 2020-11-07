@@ -32,6 +32,7 @@ import (
 	"github.com/wtfutil/wtf/modules/gitlab"
 	"github.com/wtfutil/wtf/modules/gitlabtodo"
 	"github.com/wtfutil/wtf/modules/gitter"
+	"github.com/wtfutil/wtf/modules/gmail"
 	"github.com/wtfutil/wtf/modules/googleanalytics"
 	"github.com/wtfutil/wtf/modules/grafana"
 	"github.com/wtfutil/wtf/modules/gspreadsheets"
@@ -46,6 +47,7 @@ import (
 	"github.com/wtfutil/wtf/modules/mercurial"
 	"github.com/wtfutil/wtf/modules/nbascore"
 	"github.com/wtfutil/wtf/modules/newrelic"
+	"github.com/wtfutil/wtf/modules/notes"
 	"github.com/wtfutil/wtf/modules/opsgenie"
 	"github.com/wtfutil/wtf/modules/pagerduty"
 	"github.com/wtfutil/wtf/modules/pihole"
@@ -165,7 +167,7 @@ func MakeWidget(
 		widget = football.NewWidget(app, pages, settings)
 	case "gcal":
 		settings := gcal.NewSettingsFromYAML(moduleName, moduleConfig, config)
-		widget = gcal.NewWidget(app, settings)
+		widget = gcal.NewWidget(app, pages, settings)
 	case "gerrit":
 		settings := gerrit.NewSettingsFromYAML(moduleName, moduleConfig, config)
 		widget = gerrit.NewWidget(app, pages, settings)
@@ -184,6 +186,9 @@ func MakeWidget(
 	case "gitter":
 		settings := gitter.NewSettingsFromYAML(moduleName, moduleConfig, config)
 		widget = gitter.NewWidget(app, pages, settings)
+	case "gmail":
+		settings := gmail.NewSettingsFromYAML(moduleName, moduleConfig, config)
+		widget = gmail.NewWidget(app, pages, settings)
 	case "googleanalytics":
 		settings := googleanalytics.NewSettingsFromYAML(moduleName, moduleConfig, config)
 		widget = googleanalytics.NewWidget(app, settings)
@@ -226,6 +231,9 @@ func MakeWidget(
 	case "newrelic":
 		settings := newrelic.NewSettingsFromYAML(moduleName, moduleConfig, config)
 		widget = newrelic.NewWidget(app, pages, settings)
+	case "notes":
+		settings := notes.NewSettingsFromYAML(moduleName, moduleConfig, config)
+		widget = notes.NewWidget(app, pages, settings)
 	case "opsgenie":
 		settings := opsgenie.NewSettingsFromYAML(moduleName, moduleConfig, config)
 		widget = opsgenie.NewWidget(app, settings)
